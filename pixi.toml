@@ -1,0 +1,24 @@
+[project]
+name = "nanocortex"
+version = "1.0.0"
+description = "Minimal Snowflake Cortex Agent CLI"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "osx-64", "linux-64"]
+
+[tasks]
+run = "python nanocortex.py"
+list = "python nanocortex.py -l"
+
+[dependencies]
+python = ">=3.8"
+
+[feature.full.dependencies]
+snowflake-connector-python = ">=3.0"
+cryptography = ">=3.0"
+
+[feature.full.pypi-dependencies]
+tomli = { version = ">=2.0", markers = "python_version < '3.11'" }
+
+[environments]
+default = { features = [], solve-group = "default" }
+full = { features = ["full"], solve-group = "default" }
