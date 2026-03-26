@@ -42,7 +42,6 @@ import argparse
 import base64
 import glob as globlib
 import json
-import mimetypes
 import os
 import re
 import readline
@@ -113,7 +112,7 @@ def encode_image_for_cortex(path: str) -> Optional[Dict]:
         return None
     mime = IMAGE_MIME_TYPES.get(ext, "image/png")
     data = base64.b64encode(p.read_bytes()).decode()
-    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}
+    return {"type": "image", "image": {"type": "base64", "media_type": mime, "data": data}}
 
 
 def parse_images_from_input(text: str) -> Tuple[str, List[Dict]]:
@@ -1147,9 +1146,12 @@ class CortexAgent:
 
 
     def chat(self, user_input: str, _reflect_iteration: int = 0, images: List[Dict] = None):
-        content = [{"type": "text", "text": user_input}]
+        content = []
         if images:
             content.extend(images)
+            if not any(kw in user_input.lower() for kw in ("image", "picture", "photo", "screenshot", "diagram", "chart")):
+                user_input = f"[An image has been attached inline above. Analyze it visually — do NOT try to read it from disk.] {user_input}"
+        content.append({"type": "text", "text": user_input})
         is_reflection = _reflect_iteration > 0
         interrupted = False
         
@@ -1499,7 +1501,11 @@ Options:
 
     # Non-interactive mode: run single prompt and exit
     if args.prompt:
-        agent.chat(args.prompt)
+        text, images = parse_images_from_input(args.prompt)
+        if text:
+            agent.chat(text, images=images if images else None)
+        elif images:
+            agent.chat("What do you see in this image?", images=images)
         print()
         try:
             if agent._sf_conn:
