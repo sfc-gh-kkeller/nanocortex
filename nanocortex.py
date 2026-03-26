@@ -9,6 +9,7 @@ Features:
 - Zero external dependencies (stdlib only!)
 - PAT (Programmatic Access Token) authentication  
 - Client-side tools: read, write, edit, glob, grep, bash
+- Image support: attach images inline with @path or /image command
 - SSE streaming with full tool call support
 - Multi-turn conversation with tool execution loop
 
@@ -38,8 +39,10 @@ License: MIT
 """
 
 import argparse
+import base64
 import glob as globlib
 import json
+import mimetypes
 import os
 import re
 import readline
@@ -87,6 +90,48 @@ except ImportError:
 
 RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
 BLUE, CYAN, GREEN, YELLOW, RED, MAGENTA = "\033[34m", "\033[36m", "\033[32m", "\033[33m", "\033[31m", "\033[35m"
+
+SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+IMAGE_MIME_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp",
+}
+MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20MB
+
+
+def encode_image_for_cortex(path: str) -> Optional[Dict]:
+    p = Path(path).expanduser().resolve()
+    if not p.exists():
+        print(f"{RED}Image not found: {p}{RESET}")
+        return None
+    ext = p.suffix.lower()
+    if ext not in SUPPORTED_IMAGE_EXTENSIONS:
+        print(f"{RED}Unsupported image format: {ext} (supported: {', '.join(sorted(SUPPORTED_IMAGE_EXTENSIONS))}){RESET}")
+        return None
+    if p.stat().st_size > MAX_IMAGE_SIZE:
+        print(f"{RED}Image too large: {p.stat().st_size / 1024 / 1024:.1f}MB (max: {MAX_IMAGE_SIZE / 1024 / 1024:.0f}MB){RESET}")
+        return None
+    mime = IMAGE_MIME_TYPES.get(ext, "image/png")
+    data = base64.b64encode(p.read_bytes()).decode()
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}
+
+
+def parse_images_from_input(text: str) -> Tuple[str, List[Dict]]:
+    images = []
+    cleaned_parts = []
+    for token in text.split():
+        if token.startswith("@") and len(token) > 1:
+            candidate = token[1:]
+            p = Path(candidate).expanduser()
+            if p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS and p.exists():
+                img = encode_image_for_cortex(candidate)
+                if img:
+                    images.append(img)
+                    print(f"  {DIM}📎 {p.name} ({p.stat().st_size / 1024:.0f}KB){RESET}")
+                    continue
+        cleaned_parts.append(token)
+    return " ".join(cleaned_parts), images
+
 
 # ---------------------------------------------------------------------------
 # Connection Management (reads ~/.snowflake/connections.toml)
@@ -303,6 +348,8 @@ SYSTEM_PROMPT = """You are a coding assistant with access to these tools:
 - grep: Search file contents
 - web_search: Search the web (server-side)
 - snowflake_sql_execute: Run SQL queries against Snowflake (server-side, ONE statement per call - split multi-statement queries)
+
+You can also receive images inline from the user. When an image is attached, analyze it and respond based on its content.
 
 When the user asks you to run a command, read a file, or perform any action you have a tool for, USE THE TOOL. Do not just explain what would happen - actually call the tool.
 
@@ -1099,9 +1146,10 @@ class CortexAgent:
         return self._stream(body)
 
 
-    def chat(self, user_input: str, _reflect_iteration: int = 0):
-        # Include system prompt with first message
+    def chat(self, user_input: str, _reflect_iteration: int = 0, images: List[Dict] = None):
         content = [{"type": "text", "text": user_input}]
+        if images:
+            content.extend(images)
         is_reflection = _reflect_iteration > 0
         interrupted = False
         
@@ -1632,7 +1680,26 @@ Options:
                         print(f"  {marker} {i}. {m}")
                     print(f"{DIM}Type number or /model <name>{RESET}")
                 continue
-            agent.chat(inp)
+            if inp.startswith("/image ") or inp.startswith("/img "):
+                parts = inp.split(maxsplit=1)
+                path = parts[1].strip() if len(parts) == 2 else ""
+                if not path:
+                    print(f"{DIM}Usage: /image <path> [prompt]{RESET}")
+                    print(f"{DIM}   or: @path/to/image.png what is this?{RESET}")
+                    continue
+                tokens = path.split(maxsplit=1)
+                img_path = tokens[0]
+                prompt = tokens[1] if len(tokens) > 1 else "What do you see in this image?"
+                img = encode_image_for_cortex(img_path)
+                if img:
+                    agent.chat(prompt, images=[img])
+                    print()
+                continue
+            text, images = parse_images_from_input(inp)
+            if text:
+                agent.chat(text, images=images if images else None)
+            elif images:
+                agent.chat("What do you see in this image?", images=images)
             print()
         except (KeyboardInterrupt, EOFError): 
             print(f"\n{DIM}Bye!{RESET}")
